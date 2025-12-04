@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Super Admin - Finanças Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, getDocs, query, orderBy, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ============================================================
+        // 🚨 CONFIGURAÇÃO IGUAL AO SEU INDEX.HTML
+        // ============================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyCgIhOGw4LyuS5NsB-hIRo6TmCyoTQbsxM",
+            authDomain: "dashboard-financeiro-pro.firebaseapp.com",
+            projectId: "dashboard-financeiro-pro",
+            storageBucket: "dashboard-financeiro-pro.firebasestorage.app",
+            messagingSenderId: "844342735586",
+            appId: "1:844342735586:web:b55fceb746ae4da844a4bb",
+            measurementId: "G-TZK20P3BDE"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = 'finance-pro-v1'; 
+
+        // Login Silencioso
+        signInAnonymously(auth).then(() => {
+            console.log("Admin conectado.");
+            loadAllData();
+        }).catch(console.error);
+
+        // --- Funções de Admin ---
+
+        async function loadAllData() {
+            const tableBody = document.getElementById('usersTableBody');
+            const totalUsersDisplay = document.getElementById('totalUsers');
+            const totalSystemMoneyDisplay = document.getElementById('totalSystemMoney');
+            
+            tableBody.innerHTML = '<tr><td colspan="5" class="text-center py-4"><i class="fas fa-spinner fa-spin"></i> Carregando dados...</td></tr>';
+
+            try {
+                // 1. Buscar Usuários
+                const usersSnap = await getDocs(query(collection(db, 'artifacts', appId, 'public', 'data', 'app_users'), orderBy('createdAt', 'desc')));
+                const users = usersSnap.docs.map(doc => doc.data());
+
+                // 2. Buscar TODAS Transações (Para estatísticas)
+                const transSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'app_transactions'));
+                const transactions = transSnap.docs.map(doc => doc.data());
+
+                // Atualizar Cards
+                totalUsersDisplay.innerText = users.length;
+                
+                // Calcular dinheiro total gerido pelo sistema (soma de saldos positivos)
+                let systemBalance = 0;
+                transactions.forEach(t => systemBalance += t.amount);
+                totalSystemMoneyDisplay.innerText = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(systemBalance);
+
+                // Renderizar Tabela
+                tableBody.innerHTML = '';
+                users.forEach(user => {
+                    // Filtrar transações deste usuário para mostrar saldo dele na tabela
+                    const userTrans = transactions.filter(t => t.username === user.username);
+                    const userBalance = userTrans.reduce((acc, t) => acc + t.amount, 0);
+
+                    const row = `
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="px-6 py-4 font-medium text-gray-900">${user.username}</td>
+                            <td class="px-6 py-4 text-gray-600">${user.fullName}</td>
+                            <td class="px-6 py-4 text-gray-500">${user.phone}</td>
+                            <td class="px-6 py-4 font-bold ${userBalance >= 0 ? 'text-green-600' : 'text-red-600'}">
+                                ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(userBalance)}
+                            </td>
+                            <td class="px-6 py-4 text-center">
+                                <button onclick="viewUserDetails('${user.username}')" class="text-indigo-600 hover:text-indigo-900 font-medium">
+                                    Ver Detalhes
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                    tableBody.innerHTML += row;
+                });
+
+            } catch (error) {
+                console.error("Erro ao carregar dados:", error);
+                tableBody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-red-500">Erro de permissão ou conexão. Verifique o console.</td></tr>';
+            }
+        }
+
+        // Função para ver detalhes (Simples alert por enquanto, mas pode ser um modal)
+        window.viewUserDetails = async function(username) {
+            const modal = document.getElementById('detailsModal');
+            const content = document.getElementById('modalContent');
+            
+            content.innerHTML = '<div class="text-center"><i class="fas fa-spinner fa-spin"></i> Carregando...</div>';
+            modal.classList.remove('hidden');
+
+            try {
+                // CORREÇÃO: Removemos o orderBy da query do Firestore para evitar erro de índice
+                // Buscamos apenas onde username é igual
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'app_transactions'), where('username', '==', username));
+                const snap = await getDocs(q);
+                let data = snap.docs.map(doc => doc.data());
+
+                // Ordenamos aqui no JavaScript (memória)
+                data.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+                let html = `<h3 class="text-xl font-bold mb-4 text-gray-800">Extrato de ${username}</h3>`;
+                
+                if (data.length === 0) {
+                    html += '<p class="text-gray-500">Nenhuma transação encontrada.</p>';
+                } else {
+                    html += '<div class="overflow-y-auto max-h-96"><table class="w-full text-sm text-left"><thead class="bg-gray-100"><tr><th class="p-2">Data</th><th class="p-2">Desc</th><th class="p-2 text-right">Valor</th></tr></thead><tbody>';
+                    data.forEach(t => {
+                        const color = t.amount < 0 ? 'text-red-500' : 'text-green-600';
+                        // Formata data para BR
+                        const dateFormatted = t.date.split('-').reverse().join('/');
+                        html += `<tr class="border-b"><td class="p-2">${dateFormatted}</td><td class="p-2">${t.description}</td><td class="p-2 text-right font-bold ${color}">R$ ${t.amount.toFixed(2)}</td></tr>`;
+                    });
+                    html += '</tbody></table></div>';
+                }
+                
+                content.innerHTML = html;
+
+            } catch (e) {
+                console.error(e);
+                content.innerHTML = '<p class="text-red-500">Erro ao carregar detalhes. Verifique o console.</p>';
+            }
+        }
+
+        window.closeModal = function() {
+            document.getElementById('detailsModal').classList.add('hidden');
+        }
+    </script>
+</head>
+<body class="bg-slate-100 text-gray-800">
+
+    <div class="flex h-screen overflow-hidden">
+        <!-- Sidebar Simples -->
+        <aside class="w-64 bg-slate-900 text-white flex flex-col">
+            <div class="p-6 text-center text-xl font-bold border-b border-slate-700">
+                <i class="fas fa-user-shield text-indigo-400 mr-2"></i> ADMIN
+            </div>
+            <nav class="flex-1 p-4">
+                <a href="#" class="block p-3 bg-indigo-600 rounded-lg text-white font-semibold">
+                    <i class="fas fa-users mr-2"></i> Usuários
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Conteúdo -->
+        <main class="flex-1 flex flex-col overflow-y-auto">
+            <header class="bg-white shadow p-6">
+                <h1 class="text-2xl font-bold text-gray-700">Visão Geral do Sistema</h1>
+            </header>
+
+            <div class="p-8 space-y-8">
+                
+                <!-- Stats Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-indigo-500">
+                        <p class="text-sm font-semibold text-gray-500 uppercase">Total Usuários</p>
+                        <h3 id="totalUsers" class="text-3xl font-bold text-gray-800 mt-2">0</h3>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-emerald-500">
+                        <p class="text-sm font-semibold text-gray-500 uppercase">Saldo Global (R$)</p>
+                        <h3 id="totalSystemMoney" class="text-3xl font-bold text-gray-800 mt-2">R$ 0,00</h3>
+                    </div>
+                </div>
+
+                <!-- Tabela de Usuários -->
+                <div class="bg-white rounded-lg shadow overflow-hidden">
+                    <div class="p-6 border-b border-gray-200">
+                        <h2 class="text-lg font-bold text-gray-700">Base de Usuários</h2>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-gray-50 uppercase text-gray-500 font-semibold">
+                                <tr>
+                                    <th class="px-6 py-4">Username</th>
+                                    <th class="px-6 py-4">Nome Completo</th>
+                                    <th class="px-6 py-4">Telefone</th>
+                                    <th class="px-6 py-4">Saldo Atual</th>
+                                    <th class="px-6 py-4 text-center">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody id="usersTableBody" class="divide-y divide-gray-200">
+                                <!-- Preenchido via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal de Detalhes -->
+    <div id="detailsModal" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center hidden">
+        <div class="bg-white rounded-lg shadow-xl w-11/12 max-w-2xl overflow-hidden">
+            <div class="p-4 border-b flex justify-between items-center bg-gray-50">
+                <h3 class="font-bold text-lg">Detalhes do Usuário</h3>
+                <button onclick="closeModal()" class="text-gray-500 hover:text-red-500"><i class="fas fa-times text-xl"></i></button>
+            </div>
+            <div id="modalContent" class="p-6">
+                <!-- Conteúdo dinâmico -->
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
