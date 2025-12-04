@@ -9,16 +9,18 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
+        .modal { transition: opacity 0.25s ease; }
+        body.modal-active { overflow-x: hidden; overflow-y: visible !important; }
     </style>
 
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, getDocs, query, orderBy, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, getDocs, query, orderBy, where, doc, deleteDoc, setDoc, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ============================================================
-        // 🚨 CONFIGURAÇÃO IGUAL AO SEU INDEX.HTML
+        // 🚨 SUAS CHAVES REAIS (Já configuradas)
         // ============================================================
         const firebaseConfig = {
             apiKey: "AIzaSyCgIhOGw4LyuS5NsB-hIRo6TmCyoTQbsxM",
@@ -35,167 +37,354 @@
         const db = getFirestore(app);
         const appId = 'finance-pro-v1'; 
 
-        // Login Silencioso
+        let editingUsername = null;
+
+        // Login Silencioso para Admin
         signInAnonymously(auth).then(() => {
             console.log("Admin conectado.");
             loadAllData();
         }).catch(console.error);
 
-        // --- Funções de Admin ---
+        // --- Funções de Dados ---
 
         async function loadAllData() {
             const tableBody = document.getElementById('usersTableBody');
             const totalUsersDisplay = document.getElementById('totalUsers');
             const totalSystemMoneyDisplay = document.getElementById('totalSystemMoney');
             
-            tableBody.innerHTML = '<tr><td colspan="5" class="text-center py-4"><i class="fas fa-spinner fa-spin"></i> Carregando dados...</td></tr>';
+            tableBody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-gray-500"><i class="fas fa-circle-notch fa-spin text-2xl"></i><br>Carregando base de dados...</td></tr>';
 
             try {
-                // 1. Buscar Usuários
-                const usersSnap = await getDocs(query(collection(db, 'artifacts', appId, 'public', 'data', 'app_users'), orderBy('createdAt', 'desc')));
-                const users = usersSnap.docs.map(doc => doc.data());
+                // 1. Buscar Usuários (Ordenados por data de criação)
+                // Nota: Se der erro de índice no console, removemos o orderBy temporariamente
+                let usersQuery = query(collection(db, 'artifacts', appId, 'public', 'data', 'app_users'));
+                const usersSnap = await getDocs(usersQuery);
+                let users = usersSnap.docs.map(doc => doc.data());
+                
+                // Ordenação manual em memória para garantir
+                users.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-                // 2. Buscar TODAS Transações (Para estatísticas)
+                // 2. Buscar TODAS Transações (Para calcular saldos)
                 const transSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'app_transactions'));
                 const transactions = transSnap.docs.map(doc => doc.data());
 
-                // Atualizar Cards
+                // Atualizar Cards de Estatística
                 totalUsersDisplay.innerText = users.length;
                 
-                // Calcular dinheiro total gerido pelo sistema (soma de saldos positivos)
+                // Calcular dinheiro total "positivo" no sistema
                 let systemBalance = 0;
-                transactions.forEach(t => systemBalance += t.amount);
-                totalSystemMoneyDisplay.innerText = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(systemBalance);
-
-                // Renderizar Tabela
+                // Soma apenas saldos positivos de usuários (dinheiro que "existe")
+                
                 tableBody.innerHTML = '';
+                
                 users.forEach(user => {
-                    // Filtrar transações deste usuário para mostrar saldo dele na tabela
+                    // Filtrar transações deste usuário
                     const userTrans = transactions.filter(t => t.username === user.username);
-                    const userBalance = userTrans.reduce((acc, t) => acc + t.amount, 0);
+                    
+                    // Calcular saldo do usuário
+                    let userBalance = 0;
+                    userTrans.forEach(t => {
+                        // Lógica simples: Receita soma, Despesa subtrai
+                        // No banco: Receita é positivo, Despesa é negativo. Então basta somar.
+                        userBalance += t.amount;
+                    });
+
+                    if(userBalance > 0) systemBalance += userBalance;
 
                     const row = `
-                        <tr class="border-b hover:bg-gray-50">
-                            <td class="px-6 py-4 font-medium text-gray-900">${user.username}</td>
-                            <td class="px-6 py-4 text-gray-600">${user.fullName}</td>
+                        <tr class="border-b hover:bg-gray-50 transition">
+                            <td class="px-6 py-4">
+                                <div class="font-bold text-gray-900">${user.username}</div>
+                                <div class="text-xs text-gray-400">Criado em: ${new Date(user.createdAt).toLocaleDateString('pt-BR')}</div>
+                            </td>
+                            <td class="px-6 py-4 text-gray-700">${user.fullName}</td>
                             <td class="px-6 py-4 text-gray-500">${user.phone}</td>
-                            <td class="px-6 py-4 font-bold ${userBalance >= 0 ? 'text-green-600' : 'text-red-600'}">
+                            <td class="px-6 py-4 font-bold ${userBalance >= 0 ? 'text-emerald-600' : 'text-red-500'}">
                                 ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(userBalance)}
                             </td>
-                            <td class="px-6 py-4 text-center">
-                                <button onclick="viewUserDetails('${user.username}')" class="text-indigo-600 hover:text-indigo-900 font-medium">
-                                    Ver Detalhes
-                                </button>
+                            <td class="px-6 py-4 text-center space-x-2">
+                                <button onclick="viewUserDetails('${user.username}')" class="text-indigo-500 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-2 rounded-full transition" title="Ver Extrato"><i class="fas fa-eye"></i></button>
+                                <button onclick="editUser('${user.username}', '${user.fullName}', '${user.phone}')" class="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-2 rounded-full transition" title="Editar"><i class="fas fa-edit"></i></button>
+                                <button onclick="deleteUser('${user.username}')" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-2 rounded-full transition" title="Excluir"><i class="fas fa-trash"></i></button>
                             </td>
                         </tr>
                     `;
                     tableBody.innerHTML += row;
                 });
 
+                totalSystemMoneyDisplay.innerText = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(systemBalance);
+
             } catch (error) {
                 console.error("Erro ao carregar dados:", error);
-                tableBody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-red-500">Erro de permissão ou conexão. Verifique o console.</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-red-500">Erro ao conectar com o banco de dados.<br>Verifique o console (F12) para detalhes.</td></tr>';
             }
         }
 
-        // Função para ver detalhes (Simples alert por enquanto, mas pode ser um modal)
+        // --- Ações de Usuário (CRUD) ---
+
+        window.openUserModal = function() {
+            document.getElementById('userModalTitle').innerText = 'Novo Usuário';
+            document.getElementById('btnSaveUser').innerText = 'Criar Conta';
+            document.getElementById('userForm').reset();
+            
+            // Habilita edição de todos os campos
+            document.getElementById('userNameInput').disabled = false;
+            
+            editingUsername = null;
+            toggleModal('userModal', true);
+        }
+
+        window.closeUserModal = function() {
+            toggleModal('userModal', false);
+        }
+
+        window.editUser = function(username, fullName, phone) {
+            editingUsername = username;
+            document.getElementById('userModalTitle').innerText = 'Editar Usuário';
+            document.getElementById('btnSaveUser').innerText = 'Atualizar';
+            
+            document.getElementById('userNameInput').value = fullName;
+            document.getElementById('userPhoneInput').value = phone;
+            
+            toggleModal('userModal', true);
+        }
+
+        window.saveUser = async function(e) {
+            e.preventDefault();
+            const fullName = document.getElementById('userNameInput').value.trim();
+            const phone = document.getElementById('userPhoneInput').value.trim();
+            const btn = document.getElementById('btnSaveUser');
+
+            if(!fullName || !phone) return alert("Preencha todos os campos");
+
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Processando...'; 
+            btn.disabled = true;
+
+            try {
+                if (editingUsername) {
+                    // --- MODO EDIÇÃO ---
+                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_users', editingUsername), {
+                        fullName: fullName,
+                        phone: phone
+                    });
+                    alert("Dados atualizados com sucesso!");
+                } else {
+                    // --- MODO CRIAÇÃO (Gerar @usuario) ---
+                    const names = fullName.toLowerCase().split(' ').filter(n => n.length > 0);
+                    const baseName = (names.length >= 2) ? `${names[0]}${names[1]}` : names[0];
+                    
+                    // Contador
+                    const counterRef = doc(db, 'artifacts', appId, 'public', 'data', 'counters', baseName);
+                    const counterSnap = await getDoc(counterRef);
+                    let count = 1;
+                    if (counterSnap.exists()) {
+                        count = counterSnap.data().value + 1;
+                        await updateDoc(counterRef, { value: count });
+                    } else {
+                        await setDoc(counterRef, { value: 1 });
+                    }
+                    const newUsername = `@${baseName}${count}`;
+
+                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_users', newUsername), {
+                        username: newUsername,
+                        fullName: fullName,
+                        phone: phone,
+                        createdAt: new Date().toISOString()
+                    });
+                    alert(`Usuário criado: ${newUsername}\nSenha padrão: 12345@`);
+                }
+                
+                closeUserModal();
+                loadAllData(); // Recarrega tabela
+
+            } catch (error) {
+                console.error(error);
+                alert("Erro ao salvar. Verifique se tem permissão.");
+            } finally {
+                btn.innerHTML = editingUsername ? 'Atualizar' : 'Criar Conta'; 
+                btn.disabled = false;
+            }
+        }
+
+        window.deleteUser = async function(username) {
+            if(!confirm(`ATENÇÃO: Deseja realmente excluir o usuário ${username}?\n\nIsso apagará o acesso dele, mas manterá o histórico financeiro por segurança.`)) return;
+            
+            try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_users', username));
+                loadAllData();
+                alert("Usuário removido com sucesso.");
+            } catch (e) {
+                console.error(e);
+                alert("Erro ao excluir.");
+            }
+        }
+
+        // --- Detalhes (Espionagem) ---
         window.viewUserDetails = async function(username) {
             const modal = document.getElementById('detailsModal');
             const content = document.getElementById('modalContent');
+            const title = document.getElementById('detailsTitle');
             
-            content.innerHTML = '<div class="text-center"><i class="fas fa-spinner fa-spin"></i> Carregando...</div>';
-            modal.classList.remove('hidden');
+            title.innerText = `Extrato de ${username}`;
+            content.innerHTML = '<div class="text-center py-10"><i class="fas fa-spinner fa-spin text-3xl text-indigo-600"></i><p class="mt-2 text-gray-500">Buscando transações...</p></div>';
+            toggleModal('detailsModal', true);
 
             try {
-                // CORREÇÃO: Removemos o orderBy da query do Firestore para evitar erro de índice
-                // Buscamos apenas onde username é igual
+                // Busca transações apenas desse username
+                // Nota: Ordenação feita em memória para evitar erro de índice composto
                 const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'app_transactions'), where('username', '==', username));
                 const snap = await getDocs(q);
                 let data = snap.docs.map(doc => doc.data());
-
-                // Ordenamos aqui no JavaScript (memória)
+                
+                // Ordena
                 data.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-                let html = `<h3 class="text-xl font-bold mb-4 text-gray-800">Extrato de ${username}</h3>`;
-                
                 if (data.length === 0) {
-                    html += '<p class="text-gray-500">Nenhuma transação encontrada.</p>';
+                    content.innerHTML = `
+                        <div class="text-center py-8 text-gray-400">
+                            <i class="fas fa-folder-open text-4xl mb-2"></i>
+                            <p>Nenhuma transação registrada por este usuário.</p>
+                        </div>`;
                 } else {
-                    html += '<div class="overflow-y-auto max-h-96"><table class="w-full text-sm text-left"><thead class="bg-gray-100"><tr><th class="p-2">Data</th><th class="p-2">Desc</th><th class="p-2 text-right">Valor</th></tr></thead><tbody>';
+                    let html = '<div class="overflow-y-auto max-h-[60vh]"><table class="w-full text-sm text-left"><thead class="bg-gray-100 text-gray-600 sticky top-0"><tr><th class="p-3">Data</th><th class="p-3">Descrição</th><th class="p-3">Categoria</th><th class="p-3 text-right">Valor</th></tr></thead><tbody class="divide-y divide-gray-100">';
+                    
                     data.forEach(t => {
-                        const color = t.amount < 0 ? 'text-red-500' : 'text-green-600';
-                        // Formata data para BR
-                        const dateFormatted = t.date.split('-').reverse().join('/');
-                        html += `<tr class="border-b"><td class="p-2">${dateFormatted}</td><td class="p-2">${t.description}</td><td class="p-2 text-right font-bold ${color}">R$ ${t.amount.toFixed(2)}</td></tr>`;
+                        const isExpense = t.amount < 0;
+                        const color = isExpense ? 'text-red-500' : 'text-emerald-600';
+                        const sign = isExpense ? '' : '+';
+                        const dateFormatted = t.date ? t.date.split('-').reverse().join('/') : '-';
+                        
+                        html += `
+                            <tr class="hover:bg-gray-50">
+                                <td class="p-3 text-gray-500">${dateFormatted}</td>
+                                <td class="p-3 font-medium text-gray-800">${t.description}</td>
+                                <td class="p-3"><span class="px-2 py-1 bg-gray-100 rounded text-xs text-gray-500">${t.category}</span></td>
+                                <td class="p-3 text-right font-bold ${color}">${sign} ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(t.amount)}</td>
+                            </tr>`;
                     });
                     html += '</tbody></table></div>';
+                    content.innerHTML = html;
                 }
-                
-                content.innerHTML = html;
 
             } catch (e) {
                 console.error(e);
-                content.innerHTML = '<p class="text-red-500">Erro ao carregar detalhes. Verifique o console.</p>';
+                content.innerHTML = '<p class="text-center text-red-500 py-4">Erro ao carregar detalhes.</p>';
             }
         }
 
-        window.closeModal = function() {
-            document.getElementById('detailsModal').classList.add('hidden');
+        window.closeDetailsModal = function() { toggleModal('detailsModal', false); }
+
+        // Helper genérico para modais
+        function toggleModal(modalID, show) {
+            const modal = document.getElementById(modalID);
+            if (show) {
+                modal.classList.remove('opacity-0', 'pointer-events-none');
+                document.body.classList.add('modal-active');
+            } else {
+                modal.classList.add('opacity-0', 'pointer-events-none');
+                document.body.classList.remove('modal-active');
+            }
         }
+        
+        window.toggleModal = toggleModal; // Expose
     </script>
 </head>
 <body class="bg-slate-100 text-gray-800">
 
     <div class="flex h-screen overflow-hidden">
-        <!-- Sidebar Simples -->
-        <aside class="w-64 bg-slate-900 text-white flex flex-col">
-            <div class="p-6 text-center text-xl font-bold border-b border-slate-700">
-                <i class="fas fa-user-shield text-indigo-400 mr-2"></i> ADMIN
+        <!-- Sidebar -->
+        <aside class="w-64 bg-slate-900 text-white flex flex-col shadow-2xl z-10">
+            <div class="p-6 flex items-center justify-center border-b border-slate-700 h-20">
+                <i class="fas fa-shield-alt text-emerald-400 text-2xl mr-2"></i>
+                <span class="text-xl font-bold tracking-wide">ADMIN</span>
             </div>
-            <nav class="flex-1 p-4">
-                <a href="#" class="block p-3 bg-indigo-600 rounded-lg text-white font-semibold">
-                    <i class="fas fa-users mr-2"></i> Usuários
+            
+            <nav class="flex-1 p-4 space-y-2">
+                <a href="#" class="flex items-center p-3 bg-indigo-600 rounded-lg text-white font-semibold shadow-md transition hover:bg-indigo-700">
+                    <i class="fas fa-users w-6 text-center"></i>
+                    <span class="ml-2">Usuários</span>
+                </a>
+                <a href="#" class="flex items-center p-3 text-slate-400 hover:bg-slate-800 rounded-lg transition hover:text-white">
+                    <i class="fas fa-chart-pie w-6 text-center"></i>
+                    <span class="ml-2">Relatórios (Em breve)</span>
                 </a>
             </nav>
+
+            <div class="p-4 border-t border-slate-700">
+                <div class="flex items-center">
+                    <div class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs">SU</div>
+                    <div class="ml-3">
+                        <p class="text-sm font-medium">Super User</p>
+                        <p class="text-xs text-slate-500">Online</p>
+                    </div>
+                </div>
+            </div>
         </aside>
 
-        <!-- Conteúdo -->
-        <main class="flex-1 flex flex-col overflow-y-auto">
-            <header class="bg-white shadow p-6">
-                <h1 class="text-2xl font-bold text-gray-700">Visão Geral do Sistema</h1>
+        <!-- Conteúdo Principal -->
+        <main class="flex-1 flex flex-col overflow-y-auto bg-slate-100">
+            <!-- Header -->
+            <header class="bg-white shadow-sm p-6 flex justify-between items-center sticky top-0 z-10">
+                <h1 class="text-2xl font-bold text-gray-800">Gerenciamento de Usuários</h1>
+                <button onclick="openUserModal()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg shadow transition flex items-center transform active:scale-95">
+                    <i class="fas fa-user-plus mr-2"></i> Novo Usuário
+                </button>
             </header>
 
-            <div class="p-8 space-y-8">
+            <div class="p-8 space-y-8 max-w-7xl mx-auto w-full">
                 
                 <!-- Stats Cards -->
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-indigo-500">
-                        <p class="text-sm font-semibold text-gray-500 uppercase">Total Usuários</p>
-                        <h3 id="totalUsers" class="text-3xl font-bold text-gray-800 mt-2">0</h3>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-indigo-500 flex justify-between items-center">
+                        <div>
+                            <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Usuários</p>
+                            <h3 id="totalUsers" class="text-3xl font-bold text-gray-800 mt-1">0</h3>
+                        </div>
+                        <div class="bg-indigo-50 p-3 rounded-full text-indigo-600">
+                            <i class="fas fa-users text-xl"></i>
+                        </div>
                     </div>
-                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-emerald-500">
-                        <p class="text-sm font-semibold text-gray-500 uppercase">Saldo Global (R$)</p>
-                        <h3 id="totalSystemMoney" class="text-3xl font-bold text-gray-800 mt-2">R$ 0,00</h3>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-emerald-500 flex justify-between items-center">
+                        <div>
+                            <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Saldo em Circulação</p>
+                            <h3 id="totalSystemMoney" class="text-3xl font-bold text-gray-800 mt-1">R$ 0,00</h3>
+                        </div>
+                        <div class="bg-emerald-50 p-3 rounded-full text-emerald-600">
+                            <i class="fas fa-coins text-xl"></i>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-orange-500 flex justify-between items-center">
+                        <div>
+                            <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Status do Sistema</p>
+                            <h3 class="text-xl font-bold text-green-600 mt-1">Online <i class="fas fa-circle text-xs align-middle ml-1"></i></h3>
+                        </div>
+                        <div class="bg-orange-50 p-3 rounded-full text-orange-600">
+                            <i class="fas fa-server text-xl"></i>
+                        </div>
                     </div>
                 </div>
 
                 <!-- Tabela de Usuários -->
-                <div class="bg-white rounded-lg shadow overflow-hidden">
-                    <div class="p-6 border-b border-gray-200">
-                        <h2 class="text-lg font-bold text-gray-700">Base de Usuários</h2>
+                <div class="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-200">
+                    <div class="p-6 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                        <h2 class="text-lg font-bold text-gray-700">Base de Clientes</h2>
+                        <div class="relative">
+                            <input type="text" placeholder="Buscar usuário..." class="pl-10 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 w-64">
+                            <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                        </div>
                     </div>
                     <div class="overflow-x-auto">
                         <table class="w-full text-left text-sm">
-                            <thead class="bg-gray-50 uppercase text-gray-500 font-semibold">
+                            <thead class="bg-gray-100 uppercase text-gray-500 font-semibold text-xs tracking-wider">
                                 <tr>
-                                    <th class="px-6 py-4">Username</th>
+                                    <th class="px-6 py-4">Usuário / Data</th>
                                     <th class="px-6 py-4">Nome Completo</th>
                                     <th class="px-6 py-4">Telefone</th>
                                     <th class="px-6 py-4">Saldo Atual</th>
                                     <th class="px-6 py-4 text-center">Ações</th>
                                 </tr>
                             </thead>
-                            <tbody id="usersTableBody" class="divide-y divide-gray-200">
+                            <tbody id="usersTableBody" class="divide-y divide-gray-100">
                                 <!-- Preenchido via JS -->
                             </tbody>
                         </table>
@@ -206,16 +395,51 @@
         </main>
     </div>
 
-    <!-- Modal de Detalhes -->
-    <div id="detailsModal" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center hidden">
-        <div class="bg-white rounded-lg shadow-xl w-11/12 max-w-2xl overflow-hidden">
-            <div class="p-4 border-b flex justify-between items-center bg-gray-50">
-                <h3 class="font-bold text-lg">Detalhes do Usuário</h3>
-                <button onclick="closeModal()" class="text-gray-500 hover:text-red-500"><i class="fas fa-times text-xl"></i></button>
+    <!-- Modal Detalhes (Extrato) -->
+    <div id="detailsModal" class="modal opacity-0 pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black bg-opacity-50 transition-opacity" onclick="closeDetailsModal()"></div>
+        <div class="bg-white rounded-xl shadow-2xl w-11/12 max-w-2xl overflow-hidden relative z-10 transform transition-all scale-100">
+            <div class="p-5 border-b flex justify-between items-center bg-gray-50">
+                <h3 id="detailsTitle" class="font-bold text-lg text-gray-800">Detalhes</h3>
+                <button onclick="closeDetailsModal()" class="text-gray-400 hover:text-red-500 transition"><i class="fas fa-times text-xl"></i></button>
             </div>
-            <div id="modalContent" class="p-6">
+            <div id="modalContent" class="p-0">
                 <!-- Conteúdo dinâmico -->
             </div>
+            <div class="p-4 bg-gray-50 text-right">
+                <button onclick="closeDetailsModal()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-medium">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Criar/Editar Usuário -->
+    <div id="userModal" class="modal opacity-0 pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black bg-opacity-50 transition-opacity" onclick="closeUserModal()"></div>
+        <div class="bg-white rounded-xl shadow-2xl w-11/12 max-w-md overflow-hidden relative z-10">
+            <div class="p-6 border-b bg-indigo-600 text-white flex justify-between items-center">
+                <h3 id="userModalTitle" class="font-bold text-lg">Novo Usuário</h3>
+                <button onclick="closeUserModal()" class="text-white hover:text-indigo-200"><i class="fas fa-times text-lg"></i></button>
+            </div>
+            <form id="userForm" onsubmit="saveUser(event)" class="p-6 space-y-4">
+                <div>
+                    <label class="block text-gray-700 text-sm font-bold mb-2">Nome Completo</label>
+                    <input type="text" id="userNameInput" class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition" placeholder="Ex: Maria Oliveira" required>
+                </div>
+                <div>
+                    <label class="block text-gray-700 text-sm font-bold mb-2">Telefone</label>
+                    <input type="text" id="userPhoneInput" class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition" placeholder="(00) 00000-0000" required>
+                </div>
+                
+                <div class="bg-blue-50 p-3 rounded text-sm text-blue-700 flex items-start mt-4">
+                    <i class="fas fa-info-circle mt-1 mr-2"></i>
+                    <p>Ao criar, o usuário será gerado automaticamente (ex: @maria1) com a senha padrão <strong>12345@</strong>.</p>
+                </div>
+
+                <div class="flex justify-end pt-4 gap-3">
+                    <button type="button" onclick="closeUserModal()" class="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition font-medium">Cancelar</button>
+                    <button type="submit" id="btnSaveUser" class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-bold shadow-md transform active:scale-95">Salvar</button>
+                </div>
+            </form>
         </div>
     </div>
 
