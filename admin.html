@@ -20,7 +20,7 @@
         import { getFirestore, collection, getDocs, query, orderBy, where, doc, deleteDoc, setDoc, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ============================================================
-        // 🚨 SUAS CHAVES REAIS (Já configuradas)
+        // 🚨 SUAS CHAVES REAIS DO FIREBASE
         // ============================================================
         const firebaseConfig = {
             apiKey: "AIzaSyCgIhOGw4LyuS5NsB-hIRo6TmCyoTQbsxM",
@@ -55,41 +55,48 @@
             tableBody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-gray-500"><i class="fas fa-circle-notch fa-spin text-2xl"></i><br>Carregando base de dados...</td></tr>';
 
             try {
-                // 1. Buscar Usuários (Ordenados por data de criação)
-                // Nota: Se der erro de índice no console, removemos o orderBy temporariamente
+                // 1. Buscar Usuários
                 let usersQuery = query(collection(db, 'artifacts', appId, 'public', 'data', 'app_users'));
                 const usersSnap = await getDocs(usersQuery);
                 let users = usersSnap.docs.map(doc => doc.data());
                 
-                // Ordenação manual em memória para garantir
+                // Ordenação manual em memória
                 users.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
                 // 2. Buscar TODAS Transações (Para calcular saldos)
                 const transSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'app_transactions'));
                 const transactions = transSnap.docs.map(doc => doc.data());
 
+                // 3. Buscar TODAS as Metas (Para somar ao patrimônio do usuário)
+                const goalsSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'app_goals'));
+                const goals = goalsSnap.docs.map(doc => doc.data());
+
                 // Atualizar Cards de Estatística
                 totalUsersDisplay.innerText = users.length;
                 
-                // Calcular dinheiro total "positivo" no sistema
+                // Calcular dinheiro total no sistema
                 let systemBalance = 0;
-                // Soma apenas saldos positivos de usuários (dinheiro que "existe")
                 
                 tableBody.innerHTML = '';
                 
                 users.forEach(user => {
                     // Filtrar transações deste usuário
                     const userTrans = transactions.filter(t => t.username === user.username);
+                    const userGoals = goals.filter(g => g.username === user.username);
                     
-                    // Calcular saldo do usuário
-                    let userBalance = 0;
-                    userTrans.forEach(t => {
-                        // Lógica simples: Receita soma, Despesa subtrai
-                        // No banco: Receita é positivo, Despesa é negativo. Então basta somar.
-                        userBalance += t.amount;
-                    });
+                    // Calcular saldo disponível (Receitas - Despesas)
+                    // Nota: Lembre-se que depósitos em meta já são despesas nas transações
+                    let availableBalance = 0;
+                    userTrans.forEach(t => availableBalance += t.amount);
 
-                    if(userBalance > 0) systemBalance += userBalance;
+                    // Calcular saldo em metas (Cofre)
+                    let goalsBalance = 0;
+                    userGoals.forEach(g => goalsBalance += (g.currentAmount || 0));
+
+                    // Patrimônio Total = Disponível + Metas
+                    const totalUserAssets = availableBalance + goalsBalance;
+
+                    if(totalUserAssets > 0) systemBalance += totalUserAssets;
 
                     const row = `
                         <tr class="border-b hover:bg-gray-50 transition">
@@ -99,8 +106,13 @@
                             </td>
                             <td class="px-6 py-4 text-gray-700">${user.fullName}</td>
                             <td class="px-6 py-4 text-gray-500">${user.phone}</td>
-                            <td class="px-6 py-4 font-bold ${userBalance >= 0 ? 'text-emerald-600' : 'text-red-500'}">
-                                ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(userBalance)}
+                            <td class="px-6 py-4">
+                                <div class="font-bold ${availableBalance >= 0 ? 'text-emerald-600' : 'text-red-500'}">
+                                    Disp: ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(availableBalance)}
+                                </div>
+                                <div class="text-xs text-indigo-500 font-semibold">
+                                    Cofre: ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(goalsBalance)}
+                                </div>
                             </td>
                             <td class="px-6 py-4 text-center space-x-2">
                                 <button onclick="viewUserDetails('${user.username}')" class="text-indigo-500 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-2 rounded-full transition" title="Ver Extrato"><i class="fas fa-eye"></i></button>
@@ -169,21 +181,21 @@
                     });
                     alert("Dados atualizados com sucesso!");
                 } else {
-                    // --- MODO CRIAÇÃO (Gerar @usuario) ---
+                    // --- MODO CRIAÇÃO INTELIGENTE (Gap Filling) ---
                     const names = fullName.toLowerCase().split(' ').filter(n => n.length > 0);
                     const baseName = (names.length >= 2) ? `${names[0]}${names[1]}` : names[0];
                     
-                    // Contador
-                    const counterRef = doc(db, 'artifacts', appId, 'public', 'data', 'counters', baseName);
-                    const counterSnap = await getDoc(counterRef);
                     let count = 1;
-                    if (counterSnap.exists()) {
-                        count = counterSnap.data().value + 1;
-                        await updateDoc(counterRef, { value: count });
-                    } else {
-                        await setDoc(counterRef, { value: 1 });
+                    let newUsername = `@${baseName}${count}`;
+                    
+                    // Procura o primeiro livre
+                    while (true) {
+                        const checkRef = doc(db, 'artifacts', appId, 'public', 'data', 'app_users', newUsername);
+                        const checkSnap = await getDoc(checkRef);
+                        if (!checkSnap.exists()) break; // Achou!
+                        count++;
+                        newUsername = `@${baseName}${count}`;
                     }
-                    const newUsername = `@${baseName}${count}`;
 
                     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_users', newUsername), {
                         username: newUsername,
@@ -207,7 +219,7 @@
         }
 
         window.deleteUser = async function(username) {
-            if(!confirm(`ATENÇÃO: Deseja realmente excluir o usuário ${username}?\n\nIsso apagará o acesso dele, mas manterá o histórico financeiro por segurança.`)) return;
+            if(!confirm(`ATENÇÃO: Deseja realmente excluir o usuário ${username}?\n\nIsso liberará o nome de usuário para novos cadastros.`)) return;
             
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_users', username));
@@ -231,12 +243,11 @@
 
             try {
                 // Busca transações apenas desse username
-                // Nota: Ordenação feita em memória para evitar erro de índice composto
                 const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'app_transactions'), where('username', '==', username));
                 const snap = await getDocs(q);
                 let data = snap.docs.map(doc => doc.data());
                 
-                // Ordena
+                // Ordena em memória (mais seguro contra erros de índice do Firebase)
                 data.sort((a, b) => new Date(b.date) - new Date(a.date));
 
                 if (data.length === 0) {
@@ -286,7 +297,7 @@
             }
         }
         
-        window.toggleModal = toggleModal; // Expose
+        window.toggleModal = toggleModal; 
     </script>
 </head>
 <body class="bg-slate-100 text-gray-800">
@@ -346,7 +357,7 @@
                     </div>
                     <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-emerald-500 flex justify-between items-center">
                         <div>
-                            <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Saldo em Circulação</p>
+                            <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Patrimônio Total do Sistema</p>
                             <h3 id="totalSystemMoney" class="text-3xl font-bold text-gray-800 mt-1">R$ 0,00</h3>
                         </div>
                         <div class="bg-emerald-50 p-3 rounded-full text-emerald-600">
@@ -380,7 +391,7 @@
                                     <th class="px-6 py-4">Usuário / Data</th>
                                     <th class="px-6 py-4">Nome Completo</th>
                                     <th class="px-6 py-4">Telefone</th>
-                                    <th class="px-6 py-4">Saldo Atual</th>
+                                    <th class="px-6 py-4">Finanças (Disp + Cofre)</th>
                                     <th class="px-6 py-4 text-center">Ações</th>
                                 </tr>
                             </thead>
